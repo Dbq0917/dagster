@@ -946,6 +946,44 @@ def test_partition_subset_get_partition_keys_not_in_subset(case_str: str):
     assert len(subset) == case_str.count("+")
 
 
+@pytest.mark.parametrize(
+    "old_partitions_def,new_partitions_def,expected_added_keys",
+    [
+        (
+            dg.DailyPartitionsDefinition("2024-01-01", end_date="2024-01-05"),
+            dg.DailyPartitionsDefinition("2023-12-29", end_date="2024-01-05"),
+            ["2023-12-29", "2023-12-30", "2023-12-31"],
+        ),
+        (
+            dg.DailyPartitionsDefinition("2024-01-01", end_date="2024-01-05"),
+            dg.DailyPartitionsDefinition("2024-01-01", end_date="2024-01-10"),
+            ["2024-01-05", "2024-01-06", "2024-01-07", "2024-01-08", "2024-01-09"],
+        ),
+        (
+            dg.DailyPartitionsDefinition("2023-12-29", end_date="2024-01-05"),
+            dg.DailyPartitionsDefinition("2024-01-01", end_date="2024-01-05"),
+            [],
+        ),
+    ],
+)
+def test_partition_subset_get_partition_keys_added_to_partitions_def(
+    old_partitions_def: dg.DailyPartitionsDefinition,
+    new_partitions_def: dg.DailyPartitionsDefinition,
+    expected_added_keys: Sequence[str],
+) -> None:
+    with partition_loading_context(create_datetime(2024, 1, 20)):
+        old_partition_keys = old_partitions_def.get_partition_keys()
+        subset = cast(
+            "TimeWindowPartitionsSubset",
+            old_partitions_def.subset_with_partition_keys(old_partition_keys),
+        )
+
+        # The subset continues to represent exactly the old partition keys. Recomputing it
+        # against the expanded partitions definition must only surface the newly added keys.
+        assert subset.get_partition_keys() == old_partition_keys
+        assert subset.get_partition_keys_not_in_subset(new_partitions_def) == expected_added_keys
+
+
 def test_time_partitions_subset_identical_serialization():
     # serialized subsets should be equal if the original subsets are equal
     partitions_def = dg.DailyPartitionsDefinition(start_date="2015-01-01")

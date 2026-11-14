@@ -208,77 +208,77 @@ class TimeWindowPartitionsSubset(
             for time_window in time_windows
         )
 
-    def _get_partition_time_windows_not_in_subset(self) -> Sequence[PersistedTimeWindow]:
+    def _get_partition_time_windows_not_in_subset(
+        self, partitions_def: TimeWindowPartitionsDefinition
+    ) -> Sequence[PersistedTimeWindow]:
         """Returns a list of partition time windows that are not in the subset.
         Each time window is a single partition.
         """
-        first_tw = self.partitions_def.get_first_partition_window()
-        last_tw = self.partitions_def.get_last_partition_window()
+        first_tw = partitions_def.get_first_partition_window()
+        last_tw = partitions_def.get_last_partition_window()
 
         if not first_tw or not last_tw:
             # no partitions
             return []
 
-        last_tw_end_timestamp = last_tw.end.timestamp()
-        first_tw_start_timestamp = first_tw.start.timestamp()
+        target_start_timestamp = first_tw.start.timestamp()
+        target_end_timestamp = last_tw.end.timestamp()
+        cursor = target_start_timestamp
+        missing_windows = []
 
-        if len(self.included_time_windows) == 0:
-            return [
-                PersistedTimeWindow.from_public_time_window(
-                    TimeWindow(first_tw.start, last_tw.end), self.partitions_def.timezone
+        for included_window in sorted(
+            self.included_time_windows, key=lambda tw: tw.start_timestamp
+        ):
+            included_start_timestamp = max(included_window.start_timestamp, target_start_timestamp)
+            included_end_timestamp = min(included_window.end_timestamp, target_end_timestamp)
+
+            if included_end_timestamp <= cursor:
+                continue
+            if included_start_timestamp >= target_end_timestamp:
+                break
+
+            if included_start_timestamp > cursor:
+                missing_windows.append(
+                    TimeWindow(
+                        datetime_from_timestamp(cursor, partitions_def.timezone),
+                        datetime_from_timestamp(included_start_timestamp, partitions_def.timezone),
+                    )
                 )
+
+            cursor = max(cursor, included_end_timestamp)
+            if cursor >= target_end_timestamp:
+                break
+
+        if cursor < target_end_timestamp:
+            missing_windows.append(
+                TimeWindow(
+                    datetime_from_timestamp(cursor, partitions_def.timezone),
+                    last_tw.end,
+                )
+            )
+
+        if partitions_def.exclusions:
+            missing_windows = [
+                window
+                for window in missing_windows
+                if partitions_def.has_any_partitions_in_window(window)
             ]
 
-        time_windows = []
-        if first_tw_start_timestamp < self.included_time_windows[0].start_timestamp:
-            time_windows.append(
-                PersistedTimeWindow.from_public_time_window(
-                    TimeWindow(first_tw.start, self.included_time_windows[0].start),
-                    self.partitions_def.timezone,
-                )
-            )
-
-        for i in range(len(self.included_time_windows) - 1):
-            if self.included_time_windows[i].start_timestamp >= last_tw_end_timestamp:
-                break
-            if self.included_time_windows[i].end_timestamp < last_tw_end_timestamp:
-                if self.included_time_windows[i + 1].start_timestamp <= last_tw_end_timestamp:
-                    time_windows.append(
-                        PersistedTimeWindow.from_public_time_window(
-                            TimeWindow(
-                                self.included_time_windows[i].end,
-                                self.included_time_windows[i + 1].start,
-                            ),
-                            self.partitions_def.timezone,
-                        )
-                    )
-                else:
-                    time_windows.append(
-                        PersistedTimeWindow.from_public_time_window(
-                            TimeWindow(
-                                self.included_time_windows[i].end,
-                                last_tw.end,
-                            ),
-                            self.partitions_def.timezone,
-                        )
-                    )
-
-        if last_tw_end_timestamp > self.included_time_windows[-1].end_timestamp:
-            time_windows.append(
-                PersistedTimeWindow.from_public_time_window(
-                    TimeWindow(self.included_time_windows[-1].end, last_tw.end),
-                    self.partitions_def.timezone,
-                )
-            )
-
-        return time_windows
+        return [
+            PersistedTimeWindow.from_public_time_window(window, partitions_def.timezone)
+            for window in missing_windows
+        ]
 
     def get_partition_keys_not_in_subset(
         self, partitions_def: PartitionsDefinition
     ) -> Iterable[str]:
+        if not isinstance(partitions_def, TimeWindowPartitionsDefinition):
+            subset_keys = set(self.get_partition_keys())
+            return [key for key in partitions_def.get_partition_keys() if key not in subset_keys]
+
         partition_keys: list[str] = []
-        for tw in self._get_partition_time_windows_not_in_subset():
-            partition_keys.extend(self.partitions_def.get_partition_keys_in_time_window(tw))
+        for tw in self._get_partition_time_windows_not_in_subset(partitions_def):
+            partition_keys.extend(partitions_def.get_partition_keys_in_time_window(tw))
         return partition_keys
 
     def get_partition_key_ranges(
